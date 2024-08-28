@@ -5,6 +5,8 @@ resources:
 - gradle-v0.1.yaml
 - https://raw.githubusercontent.com/konflux-ci/build-definitions/main/task/git-clone/0.1/git-clone.yaml
 - maven-v0.2.yaml
+- maven-unshare-v0.1.yaml
 - pipeline.yaml
 - pipeline-gradle.yaml
+- pipeline-unshare.yaml
 - openshift-specific-rbac.yaml

@@ -17,10 +17,12 @@ public class UnsharedProxy {
 
     @PostConstruct
     public void start() {
+
+        System.out.println("Starting unshared proxy client ...");
         new Thread(new Runnable() {
             @Override
             public void run() {
-                try (ServerSocket socket = new ServerSocket(8080)) {
+                try (ServerSocket socket = new ServerSocket(53982)) { // use non-standard port to avoid conflicts with potential other services started by the build itself
                     while (true) {
                         Socket s = socket.accept();
                         UnixDomainSocketAddress address = UnixDomainSocketAddress.of("/tmp/domainserver");

@@ -1,13 +1,14 @@
 apiVersion: tekton.dev/v1
 kind: Pipeline
 metadata:
-  name: sample-component-build
+  name: sample-component-build-unshare
 spec:
   params:
     - name: url
-    - default: ""
+      default: "https://github.com/matejonnet/test"
+    - name: revision
       description: Revision to checkout. (branch, tag, sha, ref, etc...)
-      name: revision
+      default: "master"
     - name: context
       default: ""
     - name: app-path
@@ -36,7 +37,7 @@ spec:
           value: "true"
     - name: maven-run
       taskRef:
-        name: maven
+        name: maven-unshare
       runAfter:
         - fetch-repository
       params:
