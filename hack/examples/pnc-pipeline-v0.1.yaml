@@ -1,0 +1,90 @@
+apiVersion: tekton.dev/v1
+kind: Pipeline
+metadata:
+  annotations:
+  name: sample-pnc-build-pipeline
+  namespace: test-jvm-namespace
+spec:
+  params:
+    - name: url
+      # default: https://github.com/project-ncl/pnc-api
+      default: https://github.com/matejonnet/test
+      type: string
+    - name: revision
+      description: 'Revision to checkout. (branch, tag, sha, ref, etc...)'
+      type: string
+      default: master
+    - name: BUILD_SCRIPT
+      description: 'eg. mvn clean deploy'
+      default: | 
+        mkdir target
+        curl -v http://maven.repository.redhat.com/ga/org/jboss/el/jboss-el/maven-metadata.xml | tee target/fake-artifact.jar
+        find .
+        cat /usr/share/maven/conf/settings.xml
+      type: string
+    - name: accessToken
+      type: string
+      default: here-is-indy-access-token-string #TODO remove default
+    - name: deployUrl
+      type: string
+      default: http://indyhost/ #TODO remove default
+      
+  tasks:
+    # task to generate dockerfile, basically replacing a build script
+    # push the file to a repo
+    # use pushed scm url for the buildah-oci-ta
+
+    - name: git-clone-oci-ta
+      params:
+        - name: url
+          value: $(params.url)
+        - name: revision
+          value: $(params.revision)
+        - name: ociStorage
+          value: quay.io/mlazar_konflux/jvm-builder-source:dev
+        - name: verbose
+          value: true
+      taskRef:
+        kind: Task
+        name: git-clone-oci-ta
+
+    
+    - name: gen-containerfile-ta
+      runAfter:
+        - git-clone-oci-ta
+      params:
+        - name: ociStorage
+          value: quay.io/mlazar_konflux/jvm-builder-source:dev
+        - name: SOURCE_ARTIFACT
+          value: $(tasks.git-clone-oci-ta.results.SOURCE_ARTIFACT)
+        - name: verbose
+          value: true
+        - name: BUILD_SCRIPT
+          value: $(params.BUILD_SCRIPT)
+        - name: accessToken
+          value: $(params.accessToken)
+        - name: deployUrl
+          value: $(params.deployUrl)
+
+      taskRef:
+        kind: Task
+        name: gen-containerfile-ta
+    
+    - name: buildah-oci-ta
+      runAfter:
+        - gen-containerfile-ta
+      params:
+        - name: SOURCE_ARTIFACT
+          # value: quay.io/mlazar_konflux/jvm-builder-source:dev
+          value: $(tasks.gen-containerfile-ta.results.SOURCE_ARTIFACT)
+        # - name: DOCKERFILE
+        #   value: https://raw.githubusercontent.com/matejonnet/test/build-recipe/Containerfile
+        - name: HERMETIC
+          value: false
+        - name: IMAGE # output image
+          value: quay.io/mlazar_konflux/test-build-by-buildah-oci-ta:dev
+        - name: DOCKERFILE
+          value: build.containerfile
+      taskRef:
+        kind: Task
+        name: buildah-oci-ta

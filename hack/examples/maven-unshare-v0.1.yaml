@@ -1,0 +1,203 @@
+# a placeholder for development; in a fully integrated system, this will come from the appstudio tekton bundle
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: maven-unshare
+  labels:
+    app.kubernetes.io/version: "0.2"
+  annotations:
+    tekton.dev/pipelines.minVersion: "0.12.1"
+    tekton.dev/categories: Build Tools
+    tekton.dev/tags: build-tool
+    tekton.dev/platforms: "linux/amd64,linux/s390x,linux/ppc64le"
+spec:
+  description: >-
+    This Task can be used to run a Maven build.
+  workspaces:
+    - name: source
+      description: The workspace consisting of maven project.
+    - name: maven-settings
+      description: >-
+        The workspace consisting of the custom maven settings
+        provided by the user.
+  params:
+    - name: MAVEN_IMAGE
+      type: string
+      description: Maven base image
+      default: quay.io/mlazar_konflux/jvm-builder-unshare:dev
+    - name: GOALS
+      description: maven goals to run
+      type: array
+      default:
+        - "package"
+    - name: MAVEN_MIRROR_URL
+      description: The Maven repository mirror url
+      type: string
+      default: ""
+    - name: SERVER_USER
+      description: The username for the server
+      type: string
+      default: ""
+    - name: SERVER_PASSWORD
+      description: The password for the server
+      type: string
+      default: ""
+    - name: PROXY_USER
+      description: The username for the proxy server
+      type: string
+      default: ""
+    - name: PROXY_PASSWORD
+      description: The password for the proxy server
+      type: string
+      default: ""
+    - name: PROXY_PORT
+      description: Port number for the proxy server
+      type: string
+      default: ""
+    - name: PROXY_HOST
+      description: Proxy server Host
+      type: string
+      default: ""
+    - name: PROXY_NON_PROXY_HOSTS
+      description: Non proxy server host
+      type: string
+      default: ""
+    - name: PROXY_PROTOCOL
+      description: Protocol for the proxy ie http or https
+      type: string
+      default: "http"
+    - name: CONTEXT_DIR
+      type: string
+      description: >-
+        The context directory within the repository for sources on
+        which we want to execute maven goals.
+      default: "."
+    - name: DEPENDENCY_ANALYSER_PATH
+      type: string
+      description: >-
+        The path to use for dependency analysis.
+      default: "target"
+  results:
+    - name: dependencies
+      description: The total number of dependencies in the output
+    - name: untrusted-dependencies
+      description: The total number of dependencies that came from an untrusted source, such as Maven central
+    - name: JAVA_COMMUNITY_DEPENDENCIES
+      description: The list of community dependencies
+  steps:
+    - name: mvn-settings
+      image: registry.access.redhat.com/ubi8/ubi-minimal:8.2
+      securityContext:
+        runAsUser: 0
+      script: |
+        #!/usr/bin/env bash
+
+        # fix-permissions-for-builder
+        chown 1001:1001 -R $(workspaces.source.path)
+
+        [[ -f $(workspaces.maven-settings.path)/settings.xml ]] && \
+        echo 'using existing $(workspaces.maven-settings.path)/settings.xml' && exit 0
+
+        cat > $(workspaces.maven-settings.path)/settings.xml <<EOF
+        <settings>
+          <servers>
+            <server>
+              <id>indy</id>
+              <username>$(params.SERVER_USER)</username>
+              <password>$(params.SERVER_PASSWORD)</password>
+            </server>
+          </servers>
+          <mirrors>
+            <mirror>
+              <id>mirror.default</id>
+              <url>$(params.MAVEN_MIRROR_URL)/v2/cache/user/default</url>
+              <mirrorOf>*</mirrorOf>
+          </mirrors>
+          <proxies>
+            <proxy>
+              <id>unshare-proxy</id>
+              <active>true</active>
+              <protocol>http</protocol>
+              <host>localhost</host>
+              <port>53982</port>
+              <nonProxyHosts>localhost</nonProxyHosts>
+            </proxy>
+          </proxies>
+        </settings>
+        EOF
+
+        xml=""
+        if [ -n "$(params.SERVER_USER)" -a -n "$(params.SERVER_PASSWORD)" ]; then
+          xml="<server>\
+            <id>serverid</id>"
+          xml="$xml\
+                <username>$(params.SERVER_USER)</username>\
+                <password>$(params.SERVER_PASSWORD)</password>"
+          xml="$xml\
+              </server>"
+          sed -i "s|<!-- ### SERVER's USER INFO from ENV ### -->|$xml|" $(workspaces.maven-settings.path)/settings.xml
+        fi
+
+
+    - name: mvn-goals
+      image: $(params.MAVEN_IMAGE)
+      imagePullPolicy: Always
+      computeResources:
+        limits:
+          memory: 8Gi
+          cpu: 2
+        requests:
+          memory: 4Gi
+          cpu: 250m
+      # securityContext:
+      #   runAsUser: 0
+      workingDir: $(workspaces.source.path)/$(params.CONTEXT_DIR)
+      script: |
+        #!/usr/bin/env bash
+
+        # XXX: JBS management-console webpack-cli runs 'git rev-parse HEAD'
+        # microdnf --assumeyes --nodocs --setopt=install_weak_deps=0 --setopt=tsflags=nodocs install git
+        # XXX: fatal: detected dubious ownership in repository at '/workspace/source'
+        # git config --global --add safe.directory $(workspaces.source.path)
+
+        # fix-permissions-for-builder
+        # chown 1001:1001 -R $(workspaces.source.path)
+
+        # OK, array params are easy to use when you use 'command' for a step, but a pain in the you know what
+        # with scripts.  I could not get bash to reconcile with tekton var sub, and "$(param.GOALS[*])" vs.
+        # "${params.GOALS[*]}".  Hard coding the params for now and ignoring GOALS until I can talk to Stuart
+        # and reconcile the param type here vs. having to use a script to change the permissions for running on OpenShift
+
+        # java -jar unshare-server/quarkus-run.jar \
+        # -Dproxy_host=$(params.PROXY_HOST) \
+        # -Dproxy_port=$(params.PROXY_PORT) \
+        # -Dnon_proxy_host=$(params.MAVEN_MIRROR_URL) \ #TODO get host only
+        # -Dproxy_user=$(params.PROXY_USER) \
+        # -Dproxy_user=$(params.PROXY_PASSWORD) &
+
+        echo "whoami: $(whoami)"
+        java -version
+        java -jar /opt/unshare-proxy/server/quarkus-run.jar &
+
+        sleep 5 #TODO ping the server to check if it is up
+
+        # unshare -n bash <<EOF
+        unshare -n -r bash <<EOF
+        (
+        echo "unshared namespace started"
+
+        ip link set lo up
+        java -jar /opt/unshare-proxy/client/quarkus-run.jar &
+        sleep 5 #TODO ping the client to check if it is up
+
+        # #TODO export os env vars for unshared proxy
+
+        # #mvn -V -B -e -s "$(workspaces.maven-settings.path)/settings.xml" -DskipTests clean deploy -Denforcer.skip
+        # curl -v -x http://localhost:53982 http://repository.jboss.org/nexus/content/repositories/snapshots/org/jboss/pnc/pnc-api/maven-metadata.xml
+        echo "Direct access ..."
+        curl -v http://www.httpvshttps.com
+
+        echo "Proxy access ..."
+        curl -v -x http://localhost:53982 http://www.httpvshttps.com
+        )
+        EOF

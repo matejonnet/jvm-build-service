@@ -1,0 +1,197 @@
+---
+apiVersion: tekton.dev/v1
+kind: Task
+metadata:
+  name: gen-containerfile-ta
+  annotations:
+    tekton.dev/pipelines.minVersion: 0.12.1
+    tekton.dev/tags: pnc, konflux
+  labels:
+    app.kubernetes.io/version: "0.2"
+    build.appstudio.redhat.com/build_type: docker
+spec:
+  description: |-
+    Generates containerfile for the build.
+  params:
+    - name: IMAGE_EXPIRES_AFTER
+      description: Delete image tag after specified time. Empty means to keep
+        the image tag. Time values could be something like 1h, 2d, 3w for
+        hours, days, and weeks, respectively.
+      type: string
+      default: ""
+    - name: SOURCE_ARTIFACT
+      description: The Trusted Artifact URI pointing to the artifact with
+        the application source code.
+      type: string
+    - name: ociArtifactExpiresAfter
+      description: Expiration date for the trusted artifacts created in the
+        OCI repository. An empty string means the artifacts do not expire.
+      type: string
+      default: ""
+    - name: ociStorage
+      description: The OCI repository where the Trusted Artifacts are stored.
+      type: string
+    - name: BUILD_SCRIPT
+      type: string
+    - name: accessToken
+      type: string
+    - name: deployUrl
+      type: string
+
+  results:
+    - name: SOURCE_ARTIFACT
+      description: The Trusted Artifact URI pointing to the artifact with
+        the application source code.
+      type: string
+
+  volumes:
+    - name: workdir
+      emptyDir: {}
+  stepTemplate:
+    env:
+    volumeMounts:
+      # - mountPath: /shared
+      #   name: shared
+      - mountPath: /var/workdir
+        name: workdir
+
+  steps:
+    - name: use-trusted-artifact
+      image: quay.io/redhat-appstudio/build-trusted-artifacts:latest@sha256:af3f1562ea5533337ad39e3841434705e0c271091074a285d48debce7b63d1c6
+      args:
+        - use
+        - $(params.SOURCE_ARTIFACT)=/var/workdir/source
+
+    - name: generate-containerfile
+      image: quay.io/konflux-ci/buildah-task:latest@sha256:1301e1a87a44898ab73e5dff8f6ac7499be4cb64eb7300e25d7a20ae266c87d3 #TODO use appropriate image
+      workingDir: /var/workdir
+      volumeMounts:
+        - mountPath: /var/workdir
+          name: workdir
+      env:
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.ociArtifactExpiresAfter)
+        - name: accessToken
+          value: $(params.accessToken)
+        - name: deployUrl
+          value: $(params.deployUrl)
+      script: |
+        #!/bin/bash
+        set -e
+        set -x
+        pwd
+
+        mkdir source/build-env-settings
+        cat <<EOF > source/build-env-settings/settings.xml
+        <settings xmlns="http://maven.apache.org/settings/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 http://maven.apache.org/xsd/settings-1.0.0.xsd">
+          <mirrors>
+            <mirror>
+              <id>indy-mvn</id>
+              <mirrorOf>*</mirrorOf>
+              <url>
+                ${AProxDependencyUrl}
+              </url>
+            </mirror>
+          </mirrors>
+
+          <servers>
+            <server>
+              <id>indy-mvn</id>
+              <configuration>
+                <httpConfiguration>
+                  <all>
+                    <connectionTimeout>60000</connectionTimeout>
+                    <headers>
+                      <property>
+                        <name>Authorization</name>
+                        <value>Bearer ${accessToken}</value>
+                      </property>
+                    </headers>
+                  </all>
+                </httpConfiguration>
+              </configuration>
+            </server>
+          </servers>
+
+          <proxies>
+            <proxy>
+              <id>indy-http</id>
+              <active>${isHttpActive}</active>
+              <protocol>http</protocol>
+              <host>${proxyServer}</host>
+              <port>${proxyPort}</port>
+              <username>${buildContentId}+tracking</username>
+              <password>${accessToken}</password>
+              <nonProxyHosts>${nonProxyHosts}</nonProxyHosts>
+            </proxy>
+            <proxy>
+              <id>indy-https</id>
+              <active>${isHttpActive}</active>
+              <protocol>https</protocol>
+              <host>${proxyServer}</host>
+              <port>${proxyPort}</port>
+              <username>${buildContentId}+tracking</username>
+              <password>${accessToken}</password>
+              <nonProxyHosts>${nonProxyHosts}</nonProxyHosts>
+            </proxy>
+          </proxies>
+
+          <profiles>
+            <profile>
+              <id>indy-deployment</id>
+              <properties>
+                <altDeploymentRepository>
+                  indy-mvn::default::${deployUrl}
+                </altDeploymentRepository>
+              </properties>
+            </profile>
+          </profiles>
+
+          <activeProfiles>
+            <activeProfile>indy-deployment</activeProfile>
+          </activeProfiles>
+
+          <interactiveMode>false</interactiveMode>
+          <localRepository>/tmp/.m2/repository</localRepository>
+        </settings>
+        EOF
+
+
+        cat <<EOFCF > source/build.containerfile
+        FROM quay.io/mlazar_konflux/jvm-builder-unshare:dev
+        USER 0
+        WORKDIR /root
+        COPY . /root/project/workspace/
+
+        ENV JAVA_HOME=/etc/alternatives/java_sdk_openjdk
+
+        ADD build-env-settings/settings.xml /usr/share/maven/conf/settings.xml
+
+        RUN <<EOFSCRIPT
+        #TODO start unshare-proxy-client
+        set -x
+        echo "Running build ..."
+        pwd
+        find .
+        cd /root/project/workspace/
+        $(params.BUILD_SCRIPT)
+        EOFSCRIPT
+
+        EOFCF
+        cat source/build.containerfile
+
+    - name: upload-trusted-artifact
+      image: quay.io/redhat-appstudio/build-trusted-artifacts:latest@sha256:af3f1562ea5533337ad39e3841434705e0c271091074a285d48debce7b63d1c6
+      args:
+        - create
+        - --store
+        - $(params.ociStorage)
+        - $(results.SOURCE_ARTIFACT.path)=/var/workdir/source
+      volumeMounts:
+        - mountPath: /var/workdir
+          name: workdir
+      env:
+        - name: IMAGE_EXPIRES_AFTER
+          value: $(params.ociArtifactExpiresAfter)

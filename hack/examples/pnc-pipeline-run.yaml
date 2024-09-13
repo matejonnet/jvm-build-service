@@ -1,0 +1,33 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  annotations:
+    pipeline.openshift.io/started-by: 'kube:admin'
+  name: sample-pnc-build-pipeline-00002
+  namespace: test-jvm-namespace
+  finalizers:
+    - chains.tekton.dev/pipelinerun
+  labels:
+    tekton.dev/pipeline: sample-pnc-build-pipeline
+spec:
+  params:
+    - name: url
+      value: 'https://github.com/matejonnet/test'
+    - name: revision
+      value: master
+    - name: BUILD_SCRIPT
+      value: |
+        mkdir target
+        curl -v http://maven.repository.redhat.com/ga/org/jboss/el/jboss-el/maven-metadata.xml | tee target/fake-artifact.jar
+        find .
+        cat /usr/share/maven/conf/settings.xml
+    - name: accessToken
+      value: here-is-indy-access-token-string
+    - name: deployUrl
+      value: 'http://indyhost/'
+  pipelineRef:
+    name: sample-pnc-build-pipeline
+  taskRunTemplate:
+    serviceAccountName: pipeline
+  timeouts:
+    pipeline: 1h0m0s
